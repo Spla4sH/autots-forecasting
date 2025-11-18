@@ -58,6 +58,7 @@ RESULTS_DIR = RESULTS_BASE_DIR / DATASET_NAME
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CSV_PATH = DATA_DIR / CSV_NAME
+TEMPLATE_PATH = RESULTS_DIR / f"{DATASET_NAME}_best_models.csv"
 
 
 # ============================ DATENSTRUKTUREN ============================
@@ -329,23 +330,44 @@ def rolling_window_forecast(
         f"Forecast-Stride: {forecast_every_hours}h = {forecast_stride_steps} Datenpunkte"
     )
 
-    # AutoTS Modell einmalig konfigurieren
-    model_config = {
-        "forecast_length": forecast_length_steps,
-        "frequency": "infer",
-        "prediction_interval": PREDICTION_INTERVAL,
-        "ensemble": ENSEMBLE,
-        "max_generations": MAX_GENERATIONS,
-        "num_validations": NUM_VALIDATIONS,
-        "validation_method": "backwards",
-        "model_list": MODEL_LIST,
-        "transformer_list": "fast",
-        "drop_most_recent": 0,
-        "n_jobs": N_JOBS,
-        "verbose": 0,
-    }
+    # Check ob Template existiert
+    use_template = TEMPLATE_PATH.exists()
+
+    if use_template:
+        log.info(f"Template gefunden: {TEMPLATE_PATH.name} - verwende beste Modelle")
+        # Production Mode: Nur beste Modelle, kein Search
+        model_config = {
+            "forecast_length": forecast_length_steps,
+            "frequency": "infer",
+            "prediction_interval": PREDICTION_INTERVAL,
+            "max_generations": 0,  # Keine neue Modellsuche!
+            "num_validations": 0,  # Schnelleres Retraining
+            "n_jobs": N_JOBS,
+            "verbose": 0,
+            "no_negatives": True,
+        }
+    else:
+        log.info("Kein Template - führe initiale Modellsuche durch")
+        # Initial Mode: Volle Modellsuche
+        model_config = {
+            "forecast_length": forecast_length_steps,
+            "frequency": "infer",
+            "prediction_interval": PREDICTION_INTERVAL,
+            "ensemble": ENSEMBLE,
+            "max_generations": MAX_GENERATIONS,
+            "num_validations": NUM_VALIDATIONS,
+            "validation_method": "backwards",
+            "model_list": MODEL_LIST,
+            "transformer_list": "fast",
+            "drop_most_recent": 0,
+            "n_jobs": N_JOBS,
+            "verbose": 0,
+            "no_negatives": True,
+        }
 
     iteration = 0
+    model = None
+    initial_training_done = False
 
     while current_forecast_start <= test_end:
         iteration += 1
@@ -361,11 +383,29 @@ def rolling_window_forecast(
             )
 
             model = AutoTS(**model_config)
-            model = model.fit(train_window)
 
-        # Prognose erstellen
+            # Template importieren wenn vorhanden (ab 2. Training)
+            if use_template and TEMPLATE_PATH.exists():
+                model = model.import_template(str(TEMPLATE_PATH), method="only")
+                log.info("  → Template importiert, retraining beste Modelle")
+
+            model = model.fit(train_window)  # wide format: no date_col needed
+
+            # Nach erstem Training: Template exportieren
+            if not initial_training_done and not use_template:
+                model.export_template(
+                    str(TEMPLATE_PATH), models="best", n=15, max_per_model_class=3
+                )
+                log.info(f"  → Template exportiert: {TEMPLATE_PATH.name}")
+                initial_training_done = True
+
+        # Prognose erstellen (falls model existiert)
+        if model is None:
+            log.error(f"Model ist None bei Iteration {iteration}")
+            break
+
         prediction = model.predict()
-        forecast_df = prediction.forecast
+        forecast_df = prediction.forecast  # .forecast gibt DataFrame zurück
 
         # Nur die nächsten forecast_stride_steps Datenpunkte speichern (stride)
         forecast_end_idx = min(len(forecast_df), forecast_stride_steps)
