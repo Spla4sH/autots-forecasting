@@ -8,19 +8,20 @@ from datetime import datetime as dt
 
 import numpy as np
 import pandas as pd
+
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from scipy.stats import pearsonr
 from autots import AutoTS
 
 # ============================ KONFIGURATION ============================
-CSV_NAME = "building_0.csv"  # Pfad zur CSV-Datei
+CSV_NAME = "residential1.csv"  # Pfad zur CSV-Datei
 FORECAST_YEAR = 2016
 
-HORIZON_HOURS = 24  # Prognosehorizont in Stunden
-FORECAST_EVERY_HOURS = 24  # Prognose-Intervall (wie oft neue Prognose)
+HORIZON_HOURS = 6  # Prognosehorizont in Stunden
+FORECAST_EVERY_HOURS = 6  # Prognose-Intervall (wie oft neue Prognose)
 
-N_JOBS = 1  # AutoTS Parallelisierung (1 für Windows-Stabilität)
+N_JOBS = 1  # Parallelisierung für AutoTS, Abstrz bei -1
 
 # AutoTS Modell-Konfiguration
 MODEL_LIST = "superfast"  # superfast | fast | all
@@ -52,7 +53,7 @@ RESULTS_BASE_DIR = PROJECT_ROOT / "results"
 
 # CSV Spalten
 TIMESTAMP_COL = "utc_timestamp"
-TARGET_COL = "DE_KN_industrial1_load"
+TARGET_COL = "DE_KN_residential1_load"
 
 RESULTS_DIR = RESULTS_BASE_DIR / DATASET_NAME
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -81,9 +82,12 @@ def load_and_prepare_data(csv_path: Path, time_col: str) -> pd.DataFrame:
     log.info(f"Lade Daten von: {csv_path}")
 
     df = pd.read_csv(csv_path, sep=";", usecols=[time_col, TARGET_COL])
-    df[time_col] = pd.to_datetime(df[time_col])
+    df[time_col] = pd.to_datetime(df[time_col], utc=True)
     df = df.drop_duplicates(subset=[time_col]).sort_values(time_col)
     df = df.set_index(time_col)
+
+    # Konvertiere zu timezone-naive für AutoTS Kompatibilität
+    df.index = df.index.tz_localize(None)
 
     # Lineare Interpolation
     df = df.interpolate(method="linear").bfill().ffill()
@@ -335,13 +339,13 @@ def rolling_window_forecast(
 
     if use_template:
         log.info(f"Template gefunden: {TEMPLATE_PATH.name} - verwende beste Modelle")
-        # Production Mode: Nur beste Modelle, kein Search
+        # Nur beste Modelle
         model_config = {
             "forecast_length": forecast_length_steps,
             "frequency": "infer",
             "prediction_interval": PREDICTION_INTERVAL,
             "max_generations": 0,  # Keine neue Modellsuche!
-            "num_validations": 0,  # Schnelleres Retraining
+            "num_validations": 0,  # Schnelleres Retraining, evtl noch anpassbar
             "n_jobs": N_JOBS,
             "verbose": 0,
             "no_negatives": True,
@@ -386,18 +390,28 @@ def rolling_window_forecast(
 
             # Template importieren wenn vorhanden (ab 2. Training)
             if use_template and TEMPLATE_PATH.exists():
-                model = model.import_template(str(TEMPLATE_PATH), method="only")
-                log.info("  → Template importiert, retraining beste Modelle")
+                try:
+                    model.import_template(str(TEMPLATE_PATH))
+                    log.info("Template importiert, retraining beste Modelle")
+                except Exception as e:
+                    log.warning(
+                        f"Template-Import fehlgeschlagen: {e} - führe Normaltraining durch"
+                    )
 
             model = model.fit(train_window)  # wide format: no date_col needed
 
             # Nach erstem Training: Template exportieren
             if not initial_training_done and not use_template:
-                model.export_template(
-                    str(TEMPLATE_PATH), models="best", n=15, max_per_model_class=3
-                )
-                log.info(f"  → Template exportiert: {TEMPLATE_PATH.name}")
-                initial_training_done = True
+                try:
+                    # Exportiere das beste Ensemble-Modell als Template (JSON)
+                    model.export_template(str(TEMPLATE_PATH))
+                    log.info(f"Template exportiert: {TEMPLATE_PATH.name}")
+                    initial_training_done = True
+                except Exception as e:
+                    log.warning(
+                        f"Template-Export fehlgeschlagen: {e}  fortfahren ohne Template"
+                    )
+                    initial_training_done = True
 
         # Prognose erstellen (falls model existiert)
         if model is None:

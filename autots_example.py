@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from autots import AutoTS
+from scipy.stats import pearsonr
 
 
 # Beispieldaten erstellen
@@ -128,16 +129,43 @@ if __name__ == "__main__":
 
     # Validierungsmetriken
     validation_results = model.results()
-    print(f"\n   Validierungsmetriken (aus Training):")
-    print(f"   - SMAPE (Symmetric MAPE): {validation_results['smape'].min():.2f}")
-    print(f"   - MAE (Mean Absolute Error): {validation_results['mae'].min():.2f}")
-    print(
-        f"   - RMSE (Root Mean Squared Error): {validation_results['rmse'].min():.2f}"
+
+    # Berechne zusätzliche Metriken auf den Validierungsdaten
+    # Hole die letzten 24 Stunden als Testdaten für Metrik-Berechnung
+    test_data = df.iloc[-24:]
+    test_actual = test_data["power_load_kw"].values
+
+    # Erstelle eine Vorhersage für die Testperiode (Back-Testing)
+    train_data = df.iloc[:-24]
+    temp_model = AutoTS(
+        forecast_length=24,
+        frequency="infer",
+        prediction_interval=0.95,
+        ensemble="simple",
+        max_generations=3,
+        num_validations=2,
+        validation_method="backwards",
+        model_list="superfast",
+        transformer_list="fast",
+        drop_most_recent=0,
+        n_jobs=1,
+        verbose=0,
     )
-    print(
-        f"   - MAPE (Mean Absolute Percentage Error): {validation_results['spl'].min():.2f}"
-    )
-    print(f"   - Containment (95% CI): {validation_results['containment'].max():.2%}")
+    temp_model = temp_model.fit(train_data)
+    temp_prediction = temp_model.predict()
+    test_forecast = temp_prediction.forecast["power_load_kw"].values
+
+    # Berechne Metriken
+    rmse = np.sqrt(np.mean((test_actual - test_forecast) ** 2))
+    nrmse = rmse / (test_actual.max() - test_actual.min())  # Normalisiert durch Range
+    mape = np.mean(np.abs((test_actual - test_forecast) / test_actual)) * 100
+    pearson_corr, _ = pearsonr(test_actual, test_forecast)
+
+    print(f"\n   Validierungsmetriken (Back-Testing auf letzten 24h):")
+    print(f"   - NRMSE (Normalized RMSE): {nrmse:.4f}")
+    print(f"   - RMSE (Root Mean Squared Error): {rmse:.4f} kW")
+    print(f"   - MAPE (Mean Absolute Percentage Error): {mape:.2f}%")
+    print(f"   - PEARSON (Korrelationskoeffizient): {pearson_corr:.4f}")
 
     # Top 5 Modelle
     print("\n   Top 5 Modelle nach SMAPE:")
