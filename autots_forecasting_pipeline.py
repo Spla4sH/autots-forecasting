@@ -21,13 +21,13 @@ FORECAST_YEAR = 2016
 HORIZON_HOURS = 6  # Prognosehorizont in Stunden
 FORECAST_EVERY_HOURS = 6  # Prognose-Intervall (wie oft neue Prognose)
 
-N_JOBS = 1  # Parallelisierung für AutoTS, Abstrz bei -1
+N_JOBS = 1  # Windows hat Probleme mit -1 (joblib resource tracker errors)
 
 # AutoTS Modell-Konfiguration
-MODEL_LIST = "superfast"  # superfast | fast | all
-ENSEMBLE = "simple"  # simple | distance | horizontal
-MAX_GENERATIONS = 3
-NUM_VALIDATIONS = 2
+MODEL_LIST = "default"  # default = alle robusten Modelle (fair für Vergleich mit optimiertem LightGBM)
+ENSEMBLE = "distance"  # distance für Load Forecasting (zeitabhängige Muster)
+MAX_GENERATIONS = 5  # Template-System erlaubt höhere Werte (optimiert beste Modelle)
+NUM_VALIDATIONS = 2  # Gute Balance zwischen Robustheit und Speed
 PREDICTION_INTERVAL = 0.95
 
 # ============================ SETUP & LOGGING ============================
@@ -59,7 +59,7 @@ RESULTS_DIR = RESULTS_BASE_DIR / DATASET_NAME
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 CSV_PATH = DATA_DIR / CSV_NAME
-TEMPLATE_PATH = RESULTS_DIR / f"{DATASET_NAME}_best_models.csv"
+TEMPLATE_PATH = RESULTS_DIR / f"{DATASET_NAME}_best_models.json"
 
 
 # ============================ DATENSTRUKTUREN ============================
@@ -71,6 +71,8 @@ class Metrics:
     nrmse: float
     mape: float
     pearson: float
+    coverage: float  # % der Ist-Werte im 95% Konfidenzintervall
+    interval_width_mean: float  # Durchschnittliche Breite des Konfidenzintervalls
 
 
 # ============================ DATEN LADEN ============================
@@ -112,8 +114,13 @@ def load_and_prepare_data(csv_path: Path, time_col: str) -> pd.DataFrame:
 
 
 # ============================ METRIKEN ============================
-def compute_metrics(actual: pd.Series, predicted: pd.Series) -> Metrics:
-    """RMSE, NRMSE, MAPE, Pearson berechnen."""
+def compute_metrics(
+    actual: pd.Series,
+    predicted: pd.Series,
+    upper_forecast: pd.Series = None,
+    lower_forecast: pd.Series = None,
+) -> Metrics:
+    """RMSE, NRMSE, MAPE, Pearson, Coverage, Intervall-Weite berechnen."""
     actual_vals = actual.values.flatten()
     pred_vals = predicted.values.flatten()
 
@@ -147,11 +154,28 @@ def compute_metrics(actual: pd.Series, predicted: pd.Series) -> Metrics:
         else float("nan")
     )
 
+    # Coverage & Intervall-Weite (falls Konfidenzintervall vorhanden)
+    coverage_val = 0.0
+    interval_width_mean = 0.0
+
+    if upper_forecast is not None and lower_forecast is not None:
+        upper_vals = upper_forecast.values.flatten()[:min_len]
+        lower_vals = lower_forecast.values.flatten()[:min_len]
+
+        # Coverage: Wie viel % der Ist-Werte liegen im Intervall?
+        within_interval = (actual_vals >= lower_vals) & (actual_vals <= upper_vals)
+        coverage_val = float(np.mean(within_interval) * 100)
+
+        # Durchschnittliche Intervall-Weite
+        interval_width_mean = float(np.mean(upper_vals - lower_vals))
+
     return Metrics(
         rmse=float(rmse_val),
         nrmse=float(nrmse_val),
         mape=float(mape_val),
         pearson=float(pearson_val),
+        coverage=coverage_val,
+        interval_width_mean=interval_width_mean,
     )
 
 
@@ -206,8 +230,10 @@ def plot_comparison(
     metrics: Metrics,
     save_path: Path,
     forecast_year: int,
+    upper_forecast: pd.Series = None,
+    lower_forecast: pd.Series = None,
 ) -> None:
-    """Vergleichsplot Ist vs. Prognose."""
+    """Vergleichsplot Ist vs. Prognose mit Konfidenzintervall."""
     plt.style.use("default")
     fig, ax = plt.subplots(1, 1, figsize=(24, 10))
 
@@ -218,6 +244,21 @@ def plot_comparison(
     common_idx = val_series.index.intersection(prediction.index)
     val_aligned = val_series.loc[common_idx]
     pred_aligned = prediction.loc[common_idx]
+
+    # Konfidenzintervall (falls vorhanden)
+    if upper_forecast is not None and lower_forecast is not None:
+        upper_aligned = upper_forecast.loc[common_idx]
+        lower_aligned = lower_forecast.loc[common_idx]
+
+        ax.fill_between(
+            common_idx,
+            lower_aligned.values.flatten(),
+            upper_aligned.values.flatten(),
+            color="#ff7f0e",
+            alpha=0.2,
+            label="95% Konfidenzintervall",
+            zorder=1,
+        )
 
     ax.plot(
         val_aligned.index,
@@ -238,14 +279,14 @@ def plot_comparison(
         zorder=2,
     )
 
-    ax.set_title(
+    title_text = (
         f"AutoTS Jahresprognose ({CSV_NAME}) {forecast_year} - Horizont: {HORIZON_HOURS}h - "
         f"RMSE: {metrics.rmse:.2f} kW | NRMSE: {metrics.nrmse:.1f}% | "
-        f"MAPE: {metrics.mape:.1f}% | Pearson: {metrics.pearson:.3f}",
-        fontsize=18,
-        fontweight="bold",
-        pad=25,
+        f"MAPE: {metrics.mape:.1f}% | Pearson: {metrics.pearson:.3f}"
     )
+    if metrics.coverage > 0:
+        title_text += f" | Coverage: {metrics.coverage:.1f}%"
+    ax.set_title(title_text, fontsize=18, fontweight="bold", pad=25)
     ax.set_ylabel("Last (kW)", fontsize=14, fontweight="bold")
     ax.set_xlabel("Monate", fontsize=14, fontweight="bold")
 
@@ -280,12 +321,8 @@ def plot_comparison(
     ax.tick_params(colors="#34495e", which="both")
 
     plt.tight_layout()
-
-    comparison_path = save_path.with_name(
-        save_path.name.replace("_difference", "_comparison")
-    )
-    fig.savefig(comparison_path, format="svg", dpi=300, bbox_inches="tight")
-    log.info(f"Vergleichsplot gespeichert: {comparison_path}")
+    fig.savefig(save_path, format="svg", dpi=300, bbox_inches="tight")
+    log.info(f"Vergleichsplot gespeichert: {save_path}")
     plt.close(fig)
 
 
@@ -296,8 +333,8 @@ def rolling_window_forecast(
     test_data: pd.DataFrame,
     horizon_hours: int,
     forecast_every_hours: int,
-    steps_per_hour: int,
-) -> pd.Series:
+    steps_per_hour: int = 4,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
     Rolling Window Forecasting mit wöchentlichem Retraining.
 
@@ -319,13 +356,17 @@ def rolling_window_forecast(
         7 * 24 // forecast_every_hours
     )  # Wöchentlich (alle ~7 Iterationen bei 24h stride)
 
-    current_train_end = train_data.index[-1]
+    # FESTES Rolling Window (wie LightGBM)
+    train_window_length = len(train_data)  # Feste Länge = Januar
     test_start = test_data.index[0]
     test_end = test_data.index[-1]
 
     current_forecast_start = test_start
+    current_train_end = train_data.index[-1]  # Initialer Train-End
 
     # Berechne forecast_length in Datenpunkten basierend auf tatsächlicher Frequenz
+    time_delta = df.index[1] - df.index[0]
+    minutes_per_step = time_delta.total_seconds() / 60
     forecast_length_steps = horizon_hours * steps_per_hour
     forecast_stride_steps = forecast_every_hours * steps_per_hour
 
@@ -333,51 +374,40 @@ def rolling_window_forecast(
     log.info(
         f"Forecast-Stride: {forecast_every_hours}h = {forecast_stride_steps} Datenpunkte"
     )
+    log.info(
+        f"Festes Rolling Window: {train_window_length} Punkte ({train_window_length/(steps_per_hour*24):.1f} Tage)"
+    )
+    log.info(f"Retraining alle {7 * 24 // forecast_every_hours} Iterationen (1 Woche)")
 
-    # Check ob Template existiert
+    # Template-basiertes Retraining (korrekte Methode aus AutoTS Dokumentation)
     use_template = TEMPLATE_PATH.exists()
 
     if use_template:
-        log.info(f"Template gefunden: {TEMPLATE_PATH.name} - verwende beste Modelle")
-        # Nur beste Modelle
-        model_config = {
-            "forecast_length": forecast_length_steps,
-            "frequency": "infer",
-            "prediction_interval": PREDICTION_INTERVAL,
-            "max_generations": 0,  # Keine neue Modellsuche!
-            "num_validations": 0,  # Schnelleres Retraining, evtl noch anpassbar
-            "n_jobs": N_JOBS,
-            "verbose": 0,
-            "no_negatives": True,
-        }
+        log.info(f"Template gefunden: {TEMPLATE_PATH.name}")
+        initial_template = "import"  # Template wird beim ersten AutoTS() geladen
     else:
-        log.info("Kein Template - führe initiale Modellsuche durch")
-        # Initial Mode: Volle Modellsuche
-        model_config = {
-            "forecast_length": forecast_length_steps,
-            "frequency": "infer",
-            "prediction_interval": PREDICTION_INTERVAL,
-            "ensemble": ENSEMBLE,
-            "max_generations": MAX_GENERATIONS,
-            "num_validations": NUM_VALIDATIONS,
-            "validation_method": "backwards",
-            "model_list": MODEL_LIST,
-            "transformer_list": "fast",
-            "drop_most_recent": 0,
-            "n_jobs": N_JOBS,
-            "verbose": 0,
-            "no_negatives": True,
-        }
+        log.info("Kein Template - verwende initiale Modellsuche")
+        initial_template = "general"
 
     iteration = 0
+    retrain_counter = 0
     model = None
-    initial_training_done = False
+    template_saved = False
+    all_predictions = []
+    all_upper = []
+    all_lower = []
 
     while current_forecast_start <= test_end:
         iteration += 1
 
-        # Trainings-Fenster: Vom Anfang bis aktuelles Ende
-        train_window = df.loc[:current_train_end]
+        # FESTES Rolling Window: Letzte N Punkte (wie LightGBM train_length)
+        train_window_start_idx = (
+            df.index.get_loc(current_train_end) - train_window_length + 1
+        )
+        if train_window_start_idx < 0:
+            train_window_start_idx = 0
+        train_window_start = df.index[train_window_start_idx]
+        train_window = df.loc[train_window_start:current_train_end]
 
         # Retraining alle X Iterationen
         if retrain_counter % retrain_every == 0:
@@ -386,32 +416,55 @@ def rolling_window_forecast(
                 f"({train_window.index[0].strftime('%Y-%m-%d')} bis {train_window.index[-1].strftime('%Y-%m-%d')})"
             )
 
+            # AutoTS-Konfiguration
+            model_config = {
+                "forecast_length": forecast_length_steps,
+                "frequency": "infer",
+                "prediction_interval": PREDICTION_INTERVAL,
+                "ensemble": ENSEMBLE,
+                "max_generations": MAX_GENERATIONS,
+                "num_validations": NUM_VALIDATIONS,
+                "validation_method": "backwards",
+                "model_list": MODEL_LIST,
+                "transformer_list": "fast",
+                "drop_most_recent": 0,
+                "n_jobs": N_JOBS,
+                "verbose": 0,
+                "no_negatives": True,
+            }
+
             model = AutoTS(**model_config)
 
-            # Template importieren wenn vorhanden (ab 2. Training)
+            # Template importieren VOR fit() wenn vorhanden
             if use_template and TEMPLATE_PATH.exists():
                 try:
-                    model.import_template(str(TEMPLATE_PATH))
-                    log.info("Template importiert, retraining beste Modelle")
-                except Exception as e:
-                    log.warning(
-                        f"Template-Import fehlgeschlagen: {e} - führe Normaltraining durch"
+                    model = model.import_template(
+                        str(TEMPLATE_PATH),
+                        method="only",  # Nur Template-Modelle verwenden
                     )
+                    log.info("  → Template importiert, verwende beste Modelle")
+                except Exception as e:
+                    log.warning(f"  ⚠ Template-Import fehlgeschlagen: {e}")
 
-            model = model.fit(train_window)  # wide format: no date_col needed
+            # Normales fit() - AutoTS optimiert die Template-Modelle neu
+            model = model.fit(train_window)
 
-            # Nach erstem Training: Template exportieren
-            if not initial_training_done and not use_template:
+            # Template speichern nach erstem erfolgreichen Training
+            if not template_saved and not use_template:
                 try:
-                    # Exportiere das beste Ensemble-Modell als Template (JSON)
-                    model.export_template(str(TEMPLATE_PATH))
-                    log.info(f"Template exportiert: {TEMPLATE_PATH.name}")
-                    initial_training_done = True
-                except Exception as e:
-                    log.warning(
-                        f"Template-Export fehlgeschlagen: {e}  fortfahren ohne Template"
+                    model.export_template(
+                        str(TEMPLATE_PATH),
+                        models="best",
+                        n=15,  # Top 15 Modelle exportieren
+                        max_per_model_class=3,
                     )
-                    initial_training_done = True
+                    log.info(f"  → Template exportiert: {TEMPLATE_PATH.name}")
+                    log.info(f"  → Beste Modelle: {model.best_model_name}")
+                    template_saved = True
+                    use_template = True  # Für nächstes Retraining verwenden
+                except Exception as e:
+                    log.warning(f"  ⚠ Template-Export fehlgeschlagen: {e}")
+                    template_saved = True
 
         # Prognose erstellen (falls model existiert)
         if model is None:
@@ -420,22 +473,27 @@ def rolling_window_forecast(
 
         prediction = model.predict()
         forecast_df = prediction.forecast  # .forecast gibt DataFrame zurück
+        upper_df = prediction.upper_forecast
+        lower_df = prediction.lower_forecast
 
         # Nur die nächsten forecast_stride_steps Datenpunkte speichern (stride)
         forecast_end_idx = min(len(forecast_df), forecast_stride_steps)
         forecast_slice = forecast_df.iloc[:forecast_end_idx]
+        upper_slice = upper_df.iloc[:forecast_end_idx]
+        lower_slice = lower_df.iloc[:forecast_end_idx]
 
         if len(forecast_slice) > 0:
             all_predictions.append(forecast_slice[TARGET_COL])
+            all_upper.append(upper_slice[TARGET_COL])
+            all_lower.append(lower_slice[TARGET_COL])
 
-        # Nächste Iteration
-        if len(forecast_slice) > 0:
-            current_forecast_start = forecast_slice.index[-1] + (
-                forecast_slice.index[1] - forecast_slice.index[0]
-            )
-            current_train_end = current_forecast_start - (df.index[1] - df.index[0])
-        else:
-            break
+        # Nächste Iteration: Verschiebe um forecast_stride_steps (nicht um forecast_length!)
+        current_forecast_start = current_forecast_start + pd.Timedelta(
+            minutes=forecast_stride_steps * minutes_per_step
+        )
+        current_train_end = current_forecast_start - pd.Timedelta(
+            minutes=minutes_per_step
+        )
         retrain_counter += 1
 
         if iteration % 10 == 0:
@@ -448,9 +506,17 @@ def rolling_window_forecast(
     combined = combined[~combined.index.duplicated(keep="first")]  # Duplikate entfernen
     combined = combined.sort_index()
 
+    combined_upper = pd.concat(all_upper)
+    combined_upper = combined_upper[~combined_upper.index.duplicated(keep="first")]
+    combined_upper = combined_upper.sort_index()
+
+    combined_lower = pd.concat(all_lower)
+    combined_lower = combined_lower[~combined_lower.index.duplicated(keep="first")]
+    combined_lower = combined_lower.sort_index()
+
     log.info(f"Rolling Window abgeschlossen: {len(combined)} Prognosepunkte")
 
-    return combined
+    return combined, combined_upper, combined_lower
 
 
 # ============================ MAIN PIPELINE ============================
@@ -484,22 +550,22 @@ def run_pipeline():
         log.error("Keine Test-Daten (Feb-Dez) verfügbar!")
         return
 
-    log.info(
-        f"Training auf Januar {forecast_year}: {len(january_data)} Punkte "
-        f"({len(january_data)/24:.1f} Tage)"
-    )
-    log.info(
-        f"Testing auf Feb-Dez {forecast_year}: {len(test_data)} Punkte "
-        f"({len(test_data)/24:.1f} Tage)"
-    )
-
     # 4) Berechne Schritte pro Stunde
     time_delta = df.index[1] - df.index[0]
     minutes_per_step = time_delta.total_seconds() / 60
     steps_per_hour = int(60 / minutes_per_step)
 
+    log.info(
+        f"Training auf Januar {forecast_year}: {len(january_data)} Punkte "
+        f"({len(january_data)/(steps_per_hour*24):.1f} Tage)"
+    )
+    log.info(
+        f"Testing auf Feb-Dez {forecast_year}: {len(test_data)} Punkte "
+        f"({len(test_data)/(steps_per_hour*24):.1f} Tage)"
+    )
+
     # 5) Rolling Window Forecasting
-    predictions = rolling_window_forecast(
+    predictions, upper_predictions, lower_predictions = rolling_window_forecast(
         df=df,
         train_data=january_data,
         test_data=test_data,
@@ -512,16 +578,19 @@ def run_pipeline():
     common_idx = test_data.index.intersection(predictions.index)
     test_aligned = test_data.loc[common_idx, TARGET_COL]
     pred_aligned = predictions.loc[common_idx]
+    upper_aligned = upper_predictions.loc[common_idx]
+    lower_aligned = lower_predictions.loc[common_idx]
 
     if len(test_aligned) == 0:
         log.error("Keine Überschneidung zwischen Test und Prognose!")
         return
 
     log.info(f"Evaluiere über {len(test_aligned)} überschneidende Datenpunkte")
-    metrics = compute_metrics(test_aligned, pred_aligned)
+    metrics = compute_metrics(test_aligned, pred_aligned, upper_aligned, lower_aligned)
     log.info(
         f"Metriken: RMSE={metrics.rmse:.2f} kW, NRMSE={metrics.nrmse:.2f}%, "
-        f"MAPE={metrics.mape:.2f}%, Pearson={metrics.pearson:.4f}"
+        f"MAPE={metrics.mape:.2f}%, Pearson={metrics.pearson:.4f}, "
+        f"Coverage={metrics.coverage:.1f}%, Intervall-Weite={metrics.interval_width_mean:.2f} kW"
     )
 
     # 7) Ergebnisse (Plots + JSON) speichern
@@ -534,9 +603,39 @@ def run_pipeline():
     plot_simple_difference(
         test_aligned, pred_aligned, metrics, plot_path, forecast_year=forecast_year
     )
-    plot_comparison(
-        test_aligned, pred_aligned, metrics, plot_path, forecast_year=forecast_year
+
+    comparison_plot_path = (
+        RESULTS_DIR
+        / f"{DATASET_NAME}_autots_comparison_{forecast_year}_{timestamp}.svg"
     )
+    plot_comparison(
+        test_aligned,
+        pred_aligned,
+        metrics,
+        comparison_plot_path,
+        forecast_year=forecast_year,
+        upper_forecast=upper_aligned,
+        lower_forecast=lower_aligned,
+    )
+
+    # 8) Zeitreihen speichern (Ist + Prognose + Konfidenzintervall)
+    timeseries_df = pd.DataFrame(
+        {
+            "timestamp": test_aligned.index,
+            "actual": test_aligned.values,
+            "predicted": pred_aligned.values,
+            "lower_95": lower_aligned.values,
+            "upper_95": upper_aligned.values,
+        }
+    )
+    timeseries_df.set_index("timestamp", inplace=True)
+
+    csv_path = (
+        RESULTS_DIR
+        / f"{DATASET_NAME}_timeseries_H{HORIZON_HOURS}h_{forecast_year}_{timestamp}.csv"
+    )
+    timeseries_df.to_csv(csv_path, encoding="utf-8")
+    log.info(f"Zeitreihen gespeichert: {csv_path} ({len(timeseries_df)} Punkte)")
 
     results = {
         "dataset": DATASET_NAME,
@@ -548,6 +647,8 @@ def run_pipeline():
             "nrmse": metrics.nrmse,
             "mape": metrics.mape,
             "pearson": metrics.pearson,
+            "coverage": metrics.coverage,
+            "interval_width_mean": metrics.interval_width_mean,
         },
         "model_config": {
             "model_list": MODEL_LIST,
@@ -562,7 +663,7 @@ def run_pipeline():
         RESULTS_DIR
         / f"{DATASET_NAME}_results_H{HORIZON_HOURS}h_{forecast_year}_{timestamp}.json"
     )
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, default=str)
 
     log.info(f"Ergebnisse gespeichert in: {json_path}")
