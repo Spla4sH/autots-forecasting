@@ -15,17 +15,17 @@ from scipy.stats import pearsonr
 from autots import AutoTS
 
 # ============================ KONFIGURATION ============================
-CSV_NAME = "residential1.csv"  # Pfad zur CSV-Datei
+CSV_NAME = "residential4.csv"  # Pfad zur CSV-Datei
 FORECAST_YEAR = 2016
 
 HORIZON_HOURS = 6  # Prognosehorizont in Stunden
 FORECAST_EVERY_HOURS = 6  # Prognose-Intervall (wie oft neue Prognose)
 
-N_JOBS = 1  # Windows hat Probleme mit -1 (joblib resource tracker errors)
+N_JOBS = -1  # Windows hat Probleme mit -1
 
 # AutoTS Modell-Konfiguration
 MODEL_LIST = "default"  # default = alle robusten Modelle (fair für Vergleich mit optimiertem LightGBM)
-ENSEMBLE = "distance"  # distance für Load Forecasting (zeitabhängige Muster)
+ENSEMBLE = "simple"  # simple = Durchschnitt der besten Modelle (robust, funktioniert zuverlässig)
 MAX_GENERATIONS = 5  # Template-System erlaubt höhere Werte (optimiert beste Modelle)
 NUM_VALIDATIONS = 2  # Gute Balance zwischen Robustheit und Speed
 PREDICTION_INTERVAL = 0.95
@@ -53,7 +53,7 @@ RESULTS_BASE_DIR = PROJECT_ROOT / "results"
 
 # CSV Spalten
 TIMESTAMP_COL = "utc_timestamp"
-TARGET_COL = "DE_KN_residential1_load"
+TARGET_COL = "DE_KN_residential4_load"
 
 RESULTS_DIR = RESULTS_BASE_DIR / DATASET_NAME
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -350,11 +350,9 @@ def rolling_window_forecast(
     """
     log.info("=== Starte Rolling Window Forecasting ===")
 
-    all_predictions = []
-    retrain_counter = 0
     retrain_every = (
         7 * 24 // forecast_every_hours
-    )  # Wöchentlich (alle ~7 Iterationen bei 24h stride)
+    )  # Wöchentlich (alle ~28 Iterationen bei 6h stride)
 
     # FESTES Rolling Window (wie LightGBM)
     train_window_length = len(train_data)  # Feste Länge = Januar
@@ -384,10 +382,13 @@ def rolling_window_forecast(
 
     if use_template:
         log.info(f"Template gefunden: {TEMPLATE_PATH.name}")
-        initial_template = "import"  # Template wird beim ersten AutoTS() geladen
     else:
         log.info("Kein Template - verwende initiale Modellsuche")
-        initial_template = "general"
+
+    # Berechne erwartete Iterationen für Fortschrittsanzeige
+    test_duration_minutes = (test_end - test_start).total_seconds() / 60
+    expected_iterations = int(test_duration_minutes / (forecast_every_hours * 60)) + 1
+    log.info(f"Erwartete Iterationen: ~{expected_iterations}")
 
     iteration = 0
     retrain_counter = 0
@@ -396,6 +397,7 @@ def rolling_window_forecast(
     all_predictions = []
     all_upper = []
     all_lower = []
+    start_time = time.time()
 
     while current_forecast_start <= test_end:
         iteration += 1
@@ -497,8 +499,19 @@ def rolling_window_forecast(
         retrain_counter += 1
 
         if iteration % 10 == 0:
+            elapsed = time.time() - start_time
+            progress = iteration / expected_iterations * 100
+            if iteration > 0:
+                eta_seconds = (elapsed / iteration) * (expected_iterations - iteration)
+                eta_str = (
+                    f", ETA: {eta_seconds/60:.0f} min"
+                    if eta_seconds > 60
+                    else f", ETA: {eta_seconds:.0f} sec"
+                )
+            else:
+                eta_str = ""
             log.info(
-                f"  → {iteration} Prognosen erstellt, aktuell bei {current_forecast_start.strftime('%Y-%m-%d')}"
+                f"  → {iteration}/{expected_iterations} ({progress:.1f}%) bei {current_forecast_start.strftime('%Y-%m-%d %H:%M')}{eta_str}"
             )
 
     # Alle Prognosen zusammenfügen

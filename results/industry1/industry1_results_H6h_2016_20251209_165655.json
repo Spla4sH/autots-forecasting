@@ -1,0 +1,21 @@
+{
+  "dataset": "industry1",
+  "forecast_year": 2016,
+  "horizon_hours": 6,
+  "forecast_every_hours": 6,
+  "metrics": {
+    "rmse": 10.561463844027415,
+    "nrmse": 44.75443452349155,
+    "mape": 21.3155554409628,
+    "pearson": 0.8269529706751367,
+    "coverage": 82.33246301131419,
+    "interval_width_mean": 16.444890929215422
+  },
+  "model_config": {
+    "model_list": "default",
+    "ensemble": "simple",
+    "max_generations": 5,
+    "num_validations": 2,
+    "prediction_interval": 0.95
+  }
+}
