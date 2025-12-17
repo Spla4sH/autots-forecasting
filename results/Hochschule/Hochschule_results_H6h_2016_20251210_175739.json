@@ -1,0 +1,21 @@
+{
+  "dataset": "Hochschule",
+  "forecast_year": 2016,
+  "horizon_hours": 6,
+  "forecast_every_hours": 6,
+  "metrics": {
+    "rmse": 0.7955409509976781,
+    "nrmse": 44.92201182898673,
+    "mape": 26.825340428881116,
+    "pearson": 0.6373955960881562,
+    "coverage": 69.62576153176676,
+    "interval_width_mean": 1.504815238426968
+  },
+  "model_config": {
+    "model_list": "default",
+    "ensemble": "simple",
+    "max_generations": 5,
+    "num_validations": 2,
+    "prediction_interval": 0.95
+  }
+}

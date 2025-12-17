@@ -1,0 +1,21 @@
+{
+  "dataset": "Sport",
+  "forecast_year": 2016,
+  "horizon_hours": 6,
+  "forecast_every_hours": 6,
+  "metrics": {
+    "rmse": 47.8940259426356,
+    "nrmse": 5565.133475568249,
+    "mape": 641.17960180222,
+    "pearson": 0.10340240414742286,
+    "coverage": 55.61357702349869,
+    "interval_width_mean": 1.4479584673834844
+  },
+  "model_config": {
+    "model_list": "default",
+    "ensemble": "simple",
+    "max_generations": 5,
+    "num_validations": 2,
+    "prediction_interval": 0.95
+  }
+}

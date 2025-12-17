@@ -1,0 +1,21 @@
+{
+  "dataset": "Technik",
+  "forecast_year": 2016,
+  "horizon_hours": 6,
+  "forecast_every_hours": 6,
+  "metrics": {
+    "rmse": 1.1144213571779074,
+    "nrmse": 6.542964890241835,
+    "mape": 4.191815544213658,
+    "pearson": 0.5802694703076784,
+    "coverage": 55.87467362924282,
+    "interval_width_mean": 1.4457090278666376
+  },
+  "model_config": {
+    "model_list": "default",
+    "ensemble": "simple",
+    "max_generations": 5,
+    "num_validations": 2,
+    "prediction_interval": 0.95
+  }
+}
