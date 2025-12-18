@@ -15,7 +15,7 @@ from scipy.stats import pearsonr
 from autots import AutoTS
 
 # ============================ KONFIGURATION ============================
-CSV_NAME = "building_0.csv"  # Pfad zur CSV-Datei
+CSV_NAME = "residential5.csv"  # Pfad zur CSV-Datei
 FORECAST_YEAR = 2016
 
 HORIZON_HOURS = 6  # Prognosehorizont in Stunden
@@ -52,8 +52,8 @@ DATA_DIR = PROJECT_ROOT / "data"
 RESULTS_BASE_DIR = PROJECT_ROOT / "results"
 
 # CSV Spalten
-TIMESTAMP_COL = "unixtimestamp"
-TARGET_COL = "res_0_vv_2"
+TIMESTAMP_COL = "utc_timestamp"
+TARGET_COL = "DE_KN_residential5_grid_import"
 
 RESULTS_DIR = RESULTS_BASE_DIR / DATASET_NAME
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)

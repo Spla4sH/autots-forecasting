@@ -1,0 +1,21 @@
+{
+  "dataset": "residential5",
+  "forecast_year": 2016,
+  "horizon_hours": 6,
+  "forecast_every_hours": 6,
+  "metrics": {
+    "rmse": 0.1755173023698886,
+    "nrmse": 92.35129981087361,
+    "mape": 76.20500440206666,
+    "pearson": 0.4221505018291769,
+    "coverage": 79.80852915578764,
+    "interval_width_mean": 0.6663536495402336
+  },
+  "model_config": {
+    "model_list": "default",
+    "ensemble": "simple",
+    "max_generations": 5,
+    "num_validations": 2,
+    "prediction_interval": 0.95
+  }
+}

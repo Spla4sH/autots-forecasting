@@ -1,0 +1,21 @@
+{
+  "dataset": "building_1",
+  "forecast_year": 2016,
+  "horizon_hours": 6,
+  "forecast_every_hours": 6,
+  "metrics": {
+    "rmse": 0.24335701011977273,
+    "nrmse": 223.24513028826786,
+    "mape": 138.5164844138826,
+    "pearson": 0.1590249252493142,
+    "coverage": 84.59530026109661,
+    "interval_width_mean": 0.5217837991943056
+  },
+  "model_config": {
+    "model_list": "default",
+    "ensemble": "simple",
+    "max_generations": 5,
+    "num_validations": 2,
+    "prediction_interval": 0.95
+  }
+}
