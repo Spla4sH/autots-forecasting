@@ -35,9 +35,10 @@ env/
 
 # AutoTS outputs
 *.pkl
-*.csv
-*.png
 best_params.json
+
+# Data directory
+data/
 
 # OS
 .DS_Store
