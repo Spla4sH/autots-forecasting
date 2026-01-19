@@ -33,11 +33,13 @@ env/
 *.swo
 *~
 
-# AutoTS outputs
-*.pkl
-*.csv
-*.png
-best_params.json
+# AutoTS outputs (exclude from root only)
+/*.pkl
+/*.png
+/*.csv
+
+# Data directory
+data/
 
 # OS
 .DS_Store
